@@ -1,37 +1,34 @@
-<!-- HU-STATUS TEMPLATE - do NOT remove the <!-- ... --> markers or the table headers.
-     Your weekly grade is read AUTOMATICALLY from this file:
-       01-week/hu-status/README.md  (inside YOUR fork). English. -->
+# PRJ-FERRETERIA-V13
 
-# Weekly Status - Week 01
+## Team Members
 
-<!-- CONFIG-START - must match your profile repo (username/username) CONFIG -->
-- FULL_NAME:
-- GITHUB_USER:
-- TEAM:
-- SPRINT_GOAL:
-<!-- CONFIG-END -->
+| Full Name                          | GitHub User                                                 |
+| ----------------------------       | ------------------------------------------                  |
+| Sergio Andres Ordoñez Diaz         | https://github.com/SergioAndres17                           |
+| Fredman Santiago Plazas Artunduaga | https://github.com/SantiagoPlazas2005/SantiagoPlazas2005.git|
+| Jordan Ramirez                     | https://github.com/JordanRG420                              |
+| Angel Solano                       |  https://github.com/AsolanoT                                |
 
-## 1. User stories worked this week
-| HU ID | Title | Status (todo/doing/done) | Evidence (PR or commit URL) |
-|---|---|---|---|
-| HU-XXX-001 |  |  |  |
+## HU-1 — Preliminary Design Review (PDR)
 
-## 2. My individual contribution
--
+HU-1 focuses on the preliminary design of the Sales Management System, including the data model and communication interfaces between microservices.
 
-## 3. Blockers and risks
--
+The system includes four services:
 
-## 4. Plan for next week
--
+* **Customers** — Customer management.
+* **Products** — Products, categories, and stock.
+* **Sales** — Sales and sale details.
+* **Reports** — Daily, monthly, and top-product reports.
 
-## 5. Compliance self-check
-- [ ] Conventional Commits - `type(scope): summary`
-- [ ] Per-environment HU branch + PR to that environment (hu-xxx-dev -> develop, ...)
-- [ ] Testable acceptance criteria
-- [ ] Tests added/updated (unit / integration)
-- [ ] DDD / hexagonal boundaries respected (domain has no I/O)
-- [ ] No secrets; config via environment variables
+## My Contribution
 
-## 6. Evidence links
--
+My contribution to HU-1 was focused on **Sections 6 and 7 of the PDR**:
+
+* **Section 6 — Preliminary Data Model:** defined the database structures for Customers, Products, Sales, and Reports, including their entities, attributes, relationships, and external references between services.
+* **Section 7 — APIs:** defined the preliminary REST endpoints, HTTP methods, and communication between Customers, Products, Sales, and Reports.
+* Documented the use of **external references** instead of cross-database foreign keys.
+* Defined the requirement for **JWT authentication** in API requests.
+
+### Evidence
+
+* **HU-1:** Preliminary Design Review (PDR)
