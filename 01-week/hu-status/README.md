@@ -4,7 +4,7 @@
 | Full Name                          | GitHub User                                                 |
 | ----------------------------       | ------------------------------------------                  |
 | Sergio Andres Ordoñez Diaz         | https://github.com/SergioAndres17                           |
-| Fredman Santiago Plazas Artunduaga | https://github.com/SantiagoPlazas2005/SantiagoPlazas2005.git|
+| Fredman Santiago Plazas Artunduaga | https://github.com/SantiagoPlazas2005                       |
 | Jordan Ramirez Gallego             | https://github.com/JordanRG420                              |
 | Angel Gustavo Solano Trujillo      |  https://github.com/AsolanoT                                |
 
