@@ -1,0 +1,31 @@
+flowchart TD
+    A["DISTRIBUTED SYSTEMS"] --> B["WHAT CHANGES?"]
+    A --> C["TIME"]
+    A --> D["CONSISTENCY"]
+    A --> E["COMMUNICATION"]
+    A --> F["FAILURES"]
+
+    B --> B1["No shared state"]
+    B --> B2["No global clock"]
+    B --> B3["Network can fail"]
+
+    C --> C1["Lamport Clock"]
+    C1 --> C2["Orders events"]
+    C2 --> C3["Causality"]
+
+    D --> D1["CAP"]
+    D1 --> D2["Consistency vs Availability"]
+    D --> D3["Strong → Causal → Eventual"]
+
+    E --> E1["Synchronous"]
+    E --> E2["Asynchronous"]
+    E --> E3["At-least-once"]
+    E3 --> E4["Idempotency"]
+
+    F --> F1["Node crashes"]
+    F --> F2["Lost messages"]
+    F --> F3["Network partition"]
+
+    A --> G["KEY IDEA"]
+    G --> G1["Design for failures"]
+    G1 --> G2["Choose consistency per operation"]
