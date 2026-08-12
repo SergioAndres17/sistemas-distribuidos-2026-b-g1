@@ -5,8 +5,8 @@
 | ----------------------------       | ------------------------------------------                  |
 | Sergio Andres Ordoñez Diaz         | https://github.com/SergioAndres17                           |
 | Fredman Santiago Plazas Artunduaga | https://github.com/SantiagoPlazas2005/SantiagoPlazas2005.git|
-| Jordan Ramirez                     | https://github.com/JordanRG420                              |
-| Angel Solano                       |  https://github.com/AsolanoT                                |
+| Jordan Ramirez Gallego             | https://github.com/JordanRG420                              |
+| Angel Gustavo Solano Trujillo      |  https://github.com/AsolanoT                                |
 
 ## HU-1 — Preliminary Design Review (PDR)
 
