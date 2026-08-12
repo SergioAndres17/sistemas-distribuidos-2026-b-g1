@@ -1,5 +1,4 @@
-# PRJ-FERRETERIA-V13
-
+# TEAM: Group  - GESTION-VENTAS-V1
 ## Team Members
 
 | Full Name                          | GitHub User                                                 |
