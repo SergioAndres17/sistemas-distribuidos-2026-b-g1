@@ -17,7 +17,7 @@
 
 | HU ID | Title | Status (todo/doing/done) | Evidence (PR or commit URL) |
 |---|---|---|---|
-| HU-PDR-03 | Data model and interfaces (APIs) | done | [[COMMIT_URL](https://github.com/AsolanoT/01-invoice-app/issues/9)](https://github.com/AsolanoT/01-invoice-app/issues/9) |
+| HU-PDR-03 | Data model and interfaces (APIs) | done | [https://github.com/AsolanoT/01-invoice-app/issues/9)](https://github.com/AsolanoT/01-invoice-app/issues/9) |
 | HU-ADR-03 | Document Rejected Alternatives | done | [https://github.com/AsolanoT/01-invoice-app/issues/10](https://github.com/AsolanoT/01-invoice-app/issues/10) |
 
 ## 2. My individual contribution
