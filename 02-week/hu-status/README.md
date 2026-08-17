@@ -6,6 +6,12 @@
 - TEAM: Group - SynkroTech SAS
 - SPRINT_GOAL: Data model and interfaces (APIs) and Document Rejected Alternatives.
 
+## Project Board
+
+| Board Name          | URL                                              |
+| -------------------- | ------------------------------------------------ |
+| SynkroTech - Sprint  | https://github.com/users/AsolanoT/projects/4     |
+
 | Full Name                          | GitHub User                                                 |
 | ----------------------------       | ------------------------------------------                  |
 | Sergio Andres Ordoñez Diaz         | https://github.com/SergioAndres17                           |
