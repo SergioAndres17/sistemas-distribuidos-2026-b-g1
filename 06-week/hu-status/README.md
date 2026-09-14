@@ -10,6 +10,21 @@
 - TEAM: Group - synkro-tech
 - SPRINT_GOAL: Present and defend the progress achieved in Corte 1, including the MVP implementation and the documentation advances, and receive feedback from the professor for the next stage of the project.
 <!-- CONFIG-END --> 
+
+## Docs Repository
+
+| Board Name          | URL                                              |
+| -------------------- | ------------------------------------------------ |
+| synkro-docs Repository | https://github.com/code-corhuila/synkro-docs.git |
+
+## Team Members
+
+| Full Name                          | GitHub User                                                 |
+| ----------------------------       | ------------------------------------------                  |
+| Sergio Andres Ordoñez Diaz         | https://github.com/SergioAndres17                           |
+| Fredman Santiago Plazas Artunduaga | https://github.com/SantiagoPlazas2005                       |
+| Jordan Ramirez Gallego             | https://github.com/JordanRG420                              |
+| Angel Gustavo Solano Trujillo      |  https://github.com/AsolanoT                                |
  
 ## 1. User stories worked this week 
  
