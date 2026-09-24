@@ -1,0 +1,133 @@
+openapi: 3.0.3
+info:
+  title: SynkroTech Workflow Service API
+  version: 1.0.0
+  description: >
+    The one externally-facing endpoint synkro-workflow exposes:
+    POST /api/sales, routed here by synkro-api-gateway (ADR-003 §1)
+    instead of to sales-service directly — this is where sale
+    registration actually starts from the frontend's point of view.
+
+    Internally, this triggers the SaleRegistrationSaga (ADR-003 §4): 3
+    synchronous steps against customers-service, products-service, and
+    sales-service, with compensation (stock release) if the last step
+    fails after stock was already reserved.
+
+    TECH STACK NOTE: synkro-workflow's implementation language/framework
+    is still TBD in 09-microservices/service-catalog.md. This does not
+    block this contract — OpenAPI describes the HTTP interface, not the
+    implementation. Whichever stack is chosen, it must satisfy this
+    contract unchanged.
+
+servers:
+  - url: http://localhost:8080/api/sales
+    description: >
+      Local — reached in practice through synkro-api-gateway, not
+      called directly. Port shown is illustrative; the Gateway's own
+      port is what a real client actually targets (deployment.md).
+
+security:
+  - bearerAuth: []
+
+paths:
+  /:
+    post:
+      summary: Register a sale (orchestrates the Saga's 3 steps)
+      tags: [Sales]
+      description: >
+        Unlike sales-service.yaml's own POST / (which expects an
+        already-validated, already-priced request), this endpoint takes
+        only what the frontend actually knows: which customer, which
+        products, and how many of each. synkro-workflow resolves each
+        product's current price during Saga step 2 — the frontend never
+        supplies unitPrice or subtotal here.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterSaleRequest'
+      responses:
+        '201':
+          description: >
+            All 3 Saga steps succeeded. Returns the same Sale
+            representation sales-service.yaml's POST / returns, since
+            this is ultimately what sales-service created.
+          content:
+            application/json:
+              schema:
+                $ref: 'sales-service.yaml#/components/schemas/Sale'
+        '400':
+          description: Validation error (malformed request body)
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+        '422':
+          description: >
+            Saga step 1 failed — the customer is not active
+            (ADR-003 §4). No stock was touched.
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+              example:
+                error: CUSTOMER_INACTIVE
+                message: Customer is not active
+        '409':
+          description: >
+            Saga step 2 failed — insufficient stock for one or more
+            requested products. No sale was registered, no stock was
+            reserved for this request.
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+              example:
+                error: INSUFFICIENT_STOCK
+                message: Requested quantity exceeds available stock
+        '500':
+          description: >
+            Saga step 3 failed after stock was already reserved in step
+            2 — synkro-workflow ran compensation (released the
+            reserved stock, ADR-003 §4) before returning this error.
+            The customer sees "sale failed, please retry"
+            (domain-events.md, SaleFailed reason SALE_REGISTRATION_ERROR).
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+              example:
+                error: SALE_REGISTRATION_ERROR
+                message: Sale registration failed after stock was reserved; stock has been released, please retry
+
+components:
+  schemas:
+    SaleItemRequest:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          exclusiveMinimum: 0
+
+    RegisterSaleRequest:
+      type: object
+      required: [customerId, items]
+      description: >
+        Deliberately thinner than sales-service.yaml's SaleRequest — no
+        unitPrice, no subtotal, no customer-active confirmation. Those
+        are resolved internally during the Saga, not supplied by the
+        frontend.
+      properties:
+        customerId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/SaleItemRequest'
