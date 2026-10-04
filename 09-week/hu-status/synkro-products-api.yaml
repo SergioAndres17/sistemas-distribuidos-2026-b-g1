@@ -1,0 +1,654 @@
+openapi: 3.0.3
+info:
+  title: SynkroTech Products Service API
+  version: 2.0.0
+  description: >
+    Product catalog, category management, and manual stock adjustments.
+    This contract covers the endpoints of ADR-001 §8 (as replaced by
+    ADR-004 Decisions 2 and 4) that belong to the catalog and manual
+    stock lifecycle. Stock reservations and stock alerts are in
+    HU-DOCS-58.
+
+
+    Roles: ADMIN and INVENTORY write; all three roles and the worker's
+    service token (products:read) read.
+
+servers:
+  - url: http://synkro-products-api:8080/api/v1
+    description: Inside the platform network (not published)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Products
+    description: Product CRUD and manual stock adjustments (ADR-004 Decision 4)
+  - name: Categories
+    description: Category lifecycle (ADR-004 Decision 2)
+  - name: Health
+    description: Health check (cross-cutting.md §4)
+
+paths:
+  # ─── Products ──────────────────────────────────────────────────────────
+
+  /products:
+    get:
+      operationId: listProducts
+      summary: List products (paginated)
+      tags: [Products]
+      description: >
+        Paginated, newest first. Filters: categoryId, active, name
+        (partial, case-insensitive), stockAtMost (for the worker's
+        low-stock query). Allowed to ADMIN, SALESPERSON, INVENTORY and
+        the worker's token (products:read). ADR-004 Decision 4.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/PageParam'
+        - $ref: '_shared.yaml#/components/parameters/LimitParam'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+        - name: categoryId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: active
+          in: query
+          required: false
+          schema:
+            type: boolean
+        - name: name
+          in: query
+          required: false
+          description: Partial match, case-insensitive.
+          schema:
+            type: string
+        - name: stockAtMost
+          in: query
+          required: false
+          description: Products whose stock ≤ this value (used by the worker).
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        '200':
+          description: Paginated list of products
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProductResponse'
+                  meta:
+                    $ref: '_shared.yaml#/components/schemas/PageMeta'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+
+    post:
+      operationId: createProduct
+      summary: Register a product
+      tags: [Products]
+      description: >
+        Creates a product with initial stock 0. The category must exist
+        and be active; otherwise 404. Requires Idempotency-Key. Allowed
+        to ADMIN and INVENTORY. ADR-001 §8, ADR-004 Decision 4.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProductRequest'
+      responses:
+        '201':
+          description: Product created
+          headers:
+            Location:
+              $ref: '_shared.yaml#/components/headers/Location'
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '200':
+          description: Idempotent replay — same product returned, nothing created
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+
+  /products/{id}:
+    get:
+      operationId: getProduct
+      summary: Get a product by ID
+      tags: [Products]
+      description: >
+        Returns the product if it exists and is active (or if the caller
+        is ADMIN/INVENTORY, including inactive). Allowed to all three
+        roles and the worker's token. ADR-001 §8.
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Product found
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+
+    put:
+      operationId: updateProduct
+      summary: Update a product's catalog data
+      tags: [Products]
+      description: >
+        Updates name, priceCents and categoryId. Never changes stock —
+        stock changes only through stock adjustments or stock
+        reservations. The category must exist and be active. Allowed to
+        ADMIN and INVENTORY. ADR-004 Decision 4.
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+      responses:
+        '200':
+          description: Product updated
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+
+    delete:
+      operationId: deactivateProduct
+      summary: Deactivate a product (soft delete)
+      tags: [Products]
+      description: >
+        Sets active = false. A deactivated product cannot be added to
+        new sales or reservations. Deactivating an already-inactive
+        product answers 200. Allowed to ADMIN and INVENTORY.
+        ADR-004 Decision 4.
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Product deactivated (or already inactive)
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductResponse'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+
+  # ─── Stock Adjustments ─────────────────────────────────────────────────
+
+  /products/{id}/stock-adjustments:
+    post:
+      operationId: createStockAdjustment
+      summary: Record a manual stock adjustment
+      tags: [Products]
+      description: >
+        Manual correction by INVENTORY or ADMIN: positive delta to
+        restock, negative for damage or loss. The adjustment and the
+        stock change are written in one transaction; if stock + delta
+        < 0, the response is 422 BUSINESS_RULE_VIOLATION and nothing
+        changes. Requires Idempotency-Key. ADR-004 Decision 4.
+
+
+        adjustedBy is taken from the sub of the validated token, not
+        from the request body.
+      parameters:
+        - $ref: '#/components/parameters/ProductId'
+        - $ref: '_shared.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateStockAdjustmentRequest'
+      responses:
+        '201':
+          description: Adjustment recorded, stock updated
+          headers:
+            Location:
+              $ref: '_shared.yaml#/components/headers/Location'
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockAdjustmentResponse'
+        '200':
+          description: Idempotent replay — same adjustment returned
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StockAdjustmentResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+        '422':
+          $ref: '_shared.yaml#/components/responses/UnprocessableEntity'
+
+  # ─── Categories ────────────────────────────────────────────────────────
+
+  /products/categories:
+    get:
+      operationId: listCategories
+      summary: List categories (paginated)
+      tags: [Categories]
+      description: >
+        Paginated, newest first. Filter: active. Allowed to all three
+        roles. ADR-004 Decision 2.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/PageParam'
+        - $ref: '_shared.yaml#/components/parameters/LimitParam'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+        - name: active
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Paginated list of categories
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CategoryResponse'
+                  meta:
+                    $ref: '_shared.yaml#/components/schemas/PageMeta'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+
+    post:
+      operationId: createCategory
+      summary: Create a category
+      tags: [Categories]
+      description: >
+        A duplicate name among active categories answers 422
+        BUSINESS_RULE_VIOLATION. Requires Idempotency-Key. Allowed to
+        ADMIN and INVENTORY. ADR-004 Decision 2.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCategoryRequest'
+      responses:
+        '201':
+          description: Category created
+          headers:
+            Location:
+              $ref: '_shared.yaml#/components/headers/Location'
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResponse'
+        '200':
+          description: Idempotent replay — same category returned
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '422':
+          $ref: '_shared.yaml#/components/responses/UnprocessableEntity'
+
+  /products/categories/{id}:
+    put:
+      operationId: renameCategory
+      summary: Rename a category
+      tags: [Categories]
+      description: >
+        A duplicate name among active categories answers 422
+        BUSINESS_RULE_VIOLATION. Allowed to ADMIN and INVENTORY.
+        ADR-004 Decision 2.
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateCategoryRequest'
+      responses:
+        '200':
+          description: Category renamed
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+        '422':
+          $ref: '_shared.yaml#/components/responses/UnprocessableEntity'
+
+    delete:
+      operationId: deactivateCategory
+      summary: Deactivate a category (soft delete)
+      tags: [Categories]
+      description: >
+        Deactivating a category with active products assigned to it
+        answers 422 BUSINESS_RULE_VIOLATION. Deactivating an
+        already-inactive category answers 200. Allowed to ADMIN and
+        INVENTORY. ADR-004 Decision 2.
+      parameters:
+        - $ref: '#/components/parameters/CategoryId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Category deactivated (or already inactive)
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CategoryResponse'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+        '422':
+          $ref: '_shared.yaml#/components/responses/UnprocessableEntity'
+
+  # ─── Health ────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      tags: [Health]
+      security: []
+      description: >
+        Checks connectivity to products_schema in the shared instance.
+        Public — no token required (cross-cutting.md §4).
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Unhealthy — database connectivity lost
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+# ─── Components ────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        RS256 JWT validated locally by this service (ADR-006). The
+        gateway only checks presence; this service verifies signature,
+        exp, sub and role/permissions.
+
+  parameters:
+    ProductId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CategoryId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    # ── Requests ───────────────────────────────────────────────────────
+
+    CreateProductRequest:
+      type: object
+      required: [name, priceCents, categoryId]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+          example: Logitech MX Master 3S
+        priceCents:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Unit sale price in minor units (1/100 COP). ADR-005 Decision 3.
+          example: 45990000
+        categoryId:
+          type: string
+          format: uuid
+          description: Must reference an active category.
+
+    UpdateProductRequest:
+      type: object
+      required: [name, priceCents, categoryId]
+      description: >
+        Full replacement of catalog data. Never includes stock — stock
+        changes only through stock adjustments or stock reservations.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        priceCents:
+          type: integer
+          format: int64
+          minimum: 1
+        categoryId:
+          type: string
+          format: uuid
+
+    CreateStockAdjustmentRequest:
+      type: object
+      required: [delta, reason]
+      properties:
+        delta:
+          type: integer
+          description: >
+            Units added (positive) or removed (negative). Never 0.
+          example: -3
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Why the stock was corrected.
+          example: Damaged during shipping
+
+    CreateCategoryRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 100
+          example: Peripherals
+
+    # ── Responses ──────────────────────────────────────────────────────
+
+    ProductResponse:
+      type: object
+      required: [productId, name, priceCents, stock, categoryId, active]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        priceCents:
+          type: integer
+          format: int64
+          description: Price in minor units (1/100 COP).
+        stock:
+          type: integer
+          description: Current available quantity (never negative).
+        categoryId:
+          type: string
+          format: uuid
+        active:
+          type: boolean
+
+    StockAdjustmentResponse:
+      type: object
+      required: [adjustmentId, productId, delta, reason, adjustedBy, adjustedAt, currentStock]
+      properties:
+        adjustmentId:
+          type: string
+          format: uuid
+        productId:
+          type: string
+          format: uuid
+        delta:
+          type: integer
+        reason:
+          type: string
+        adjustedBy:
+          type: string
+          format: uuid
+          description: sub of the validated token (ADR-006).
+        adjustedAt:
+          type: string
+          format: date-time
+        currentStock:
+          type: integer
+          description: Stock after this adjustment was applied.
+
+    CategoryResponse:
+      type: object
+      required: [categoryId, name, active]
+      properties:
+        categoryId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        active:
+          type: boolean
+
+    HealthResponse:
+      type: object
+      required: [status, service, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        service:
+          type: string
+          example: synkro-products-api
+        timestamp:
+          type: string
+          format: date-time
+        dependencies:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [ok, down]

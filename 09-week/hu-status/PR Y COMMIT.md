@@ -1,18 +1,19 @@
 
+---
 
 **Rama:**
 ```
-docs/correct-security-docs-for-shared-instance
+docs/align-products-api-catalog-contract
 ```
 
 **Commit:**
 ```
-docs(security): correct threat model, security policy and cross-cutting for shared-instance topology
+docs(api): rewrite products contract for catalog, categories and stock adjustments
 ```
 
 **Título del PR:**
 ```
-docs(security): correct threat model, security policy and cross-cutting for shared-instance topology
+docs(api): rewrite products contract for catalog, categories and stock adjustments
 ```
 
 **Descripción del PR:**
@@ -21,55 +22,46 @@ docs(security): correct threat model, security policy and cross-cutting for shar
 
 ### Summary
 
-Corrects the three security and cross-cutting documents to reflect the
-shared-instance topology decided in ADR-009: one PostgreSQL instance per
-environment with schema-level isolation, instead of one instance per
-domain.
+Rewrites `synkro-products-api.yaml` from scratch to match ADR-004
+Decisions 2 (categories) and 4 (product catalog and stock adjustments),
+replacing the pre-ADR-004 contract that still had `PATCH /stock` and
+a "KNOWN GAP" note about missing categories.
 
 ### Changes
 
-- **`security-threat-model.md` scope**: "each domain has its own database
-  instance" → "all domains share one instance per environment, isolated
-  by schema and GRANT".
-- **T-3**: isolation by per-schema credentials and CI verification, not
-  by separate instances.
-- **T-6**: `workflow-db` → `workflow_schema` in the shared instance.
-- **D-3**: the most significant change — a slow report query can now
-  affect ALL domains, not just Sales. Adds connection-pool sizing as
-  mitigation and references AT-002 (shared instance as accepted single
-  point of failure).
-- **E-3**: "only synkro-auth-api connects to auth-db" → "only
-  synkro-auth-api has credentials for auth_schema".
-- **`cross-cutting.md` §4**: health check dependency table points to
-  `synkro-db — connectivity to <domain>_schema` instead of separate
-  `<domain>-db` instances.
-- **`cross-cutting.md` §9**: summary table updated.
-- **`security-policy.md`**: principle 2 (Least Privilege) and SQL
-  Injection Prevention now say "schema in the shared instance".
-- **References sections** in all three files cite ADR-009.
+- **11 endpoints** covering the full product and category lifecycle
+  plus manual stock adjustments and the health check.
+- `PATCH /api/products/{id}/stock` removed (ADR-004 Decision 4);
+  replaced by `POST /api/v1/products/{id}/stock-adjustments` with
+  Idempotency-Key, delta, reason, and adjustedBy from the token's sub.
+- Category CRUD under `/api/v1/products/categories` (ADR-004 Decision
+  2), with duplicate-name and active-products-on-deactivate guards.
+- All money fields are `…Cents` as `integer` (int64) — ADR-005
+  Decision 3.
+- All schemas reference `_shared.yaml` for Error, PageMeta, parameters
+  and common responses.
+- Health check documents connectivity to `products_schema` in the
+  shared instance (ADR-009, cross-cutting.md §4).
+- Server URL uses `synkro-products-api:8080` (inside the platform
+  network, not published).
 
-### What is NOT changed
+### What is NOT in this contract
 
-The STRIDE threat count stays at 25 (no new threats added, no threats
-removed). D-3's status remains "Risk accepted" — the shared instance
-widens the blast radius, but the mitigation (indexed queries,
-connection-pool limits) and the accepted-risk declaration in ADR-009
-cover it.
+Stock reservations (create, release) and stock alerts (list, create,
+resolve) belong to HU-DOCS-58 and will be added in a follow-up PR.
 
 ### Definition of Done
 
-- [x] Threat model scope reflects the shared instance isolated by schema and GRANT
-- [x] T-3 explains isolation by per-schema credentials, not by separate instances
-- [x] D-3 acknowledges the shared instance as a shared point of failure with connection-pool mitigation
-- [x] E-3 says "has credentials for auth_schema", not "connects to auth-db"
-- [x] T-6 says "workflow_schema in the shared instance", not "its own instance"
-- [x] Cross-cutting health check table points to synkro-db with schema names
-- [x] Security policy least-privilege and SQL injection sections say "schema in the shared instance"
-- [x] Full-text search for "its own instance" and "its own database" returns zero hits in all three files
-- [x] Reviewed and approved by Angel (Tech Lead) and Jordan (ADR-005 author)
+- [x] Contract contains all catalog, category and manual-stock-adjustment endpoints from ADR-004
+- [x] `PATCH /api/products/{id}/stock` is absent (removed by ADR-004)
+- [x] Every path cites the decision that introduced it (ADR-001 §8 or ADR-004)
+- [x] Money fields named `…Cents` and typed as integer (ADR-005 Decision 3)
+- [x] Role and permission requirements per endpoint documented and consistent with authentication.md
+- [x] Schemas reference `_shared.yaml` components
+- [x] Reviewed and approved by Angel (Tech Lead, ADR-004 co-author) and Jordan (ADR-004 co-author)
 
-**Reviewers:** Angel (Tech Lead, ADR-009 author) y Jordan (autor del ADR-005 original que contenía las decisiones de aislamiento).
+**Reviewers:** Angel and Jordan.
 
-Closes HU-DOCS-56 (part of HU-11).
+Closes HU-DOCS-57 (part of HU-11).
 
 
