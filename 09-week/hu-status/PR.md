@@ -1,85 +1,53 @@
-# HU-ARQ-26 — Register, issue for the instructor and domain map
+# HU-DOCS-83 — Security documents and non-functional requirements
 
-**Branch:** `docs/add-adr-013-identity-as-cross-cutting-security`
-**Commit and PR title:** `docs(architecture): add ADR-013 — identity service as cross-cutting security`
+**Branch:** `docs/align-security-and-nfr-with-two-engines`
+**PR title:** `docs(governance): align security documents and nfr with two engines`
+**Depends on:** HU-ARQ-23, HU-ARQ-25
+| HU-DOCS-83 | HU-ARQ-23, HU-ARQ-25 | Sergio |
 
-Order of work:
-
-1. Open the issue of section 2 and put its link in the ADR's Context.
-2. Merge the ADR as `Proposed` with the register row of section 1.
-3. When the instructor answers, open a second pull request from a new `docs/` branch: status, date and, if Option A is confirmed, the domain-map text of section 3.
-
----
-
-## 1. Changes in `05-architecture/decisions/README.md`
-
-### New row (after ADR-012)
+**Branch:** `docs/align-security-and-nfr-with-two-engines`
+**Commit title:** `docs(governance): align security documents and nfr with two engines`
 
 ```markdown
-| [ADR-013](records/ADR-013-identity-as-cross-cutting-security.md) | Identity Service as the Cross-Cutting Security Service | Proposed | 2026-10 | — | — | ADR-006 (private key holder, token validation in every service), ADR-001 (identity and roles) |
+## Description
+
+### Summary
+
+Updates the security policy, technical security rules, STRIDE threat model
+and non-functional requirements for ADR-010 (Sales on MongoDB), ADR-011
+(Angular Customers portal) and ADR-012 (instance bootstrap and the new
+credential model). The credential model correction applies to every
+PostgreSQL domain, not only to what changed for Sales.
+
+### Changes
+
+- **`00-governance/security-policy.md`**: Least Privilege principle and
+  Secret Management rewritten for ADR-012's fixed-name service users and
+  administrator-only migrations; new "Document Query Injection Prevention"
+  section for Sales' MongoDB queries; OWASP A03 row updated.
+- **`00-governance/security-rules.md`**: A03 gains a MongoDB-specific rule
+  (typed query builders, no raw body as a query document, validator as a
+  second layer).
+- **`05-architecture/security-threat-model.md`**: Scope extended to both
+  instances; T-3 and D-3 rewritten to explain the stronger isolation Sales
+  gets from being on a separate instance; new **T-7** for document-query
+  injection; E-1 notes the Angular portal is unaffected; Status Summary
+  updated (Tampering 6→7, Total 25→26).
+- **`04-requirements/non-functional.md`**: NFR-003, NFR-004, NFR-007 and
+  NFR-009 updated for two engines and the ADR-012 credential model; priority
+  matrix and correlations extended.
+
+### Definition of Done
+
+- [x] No document in this PR still describes the two-credential-pair-per-domain
+      model or cites `<DOMAIN>_DB_USER`/`FLYWAY_PLACEHOLDERS_APP_USER`
+- [x] Every mention of Sales' isolation explains it is a separate instance,
+      not a schema, and is at least as strong as the PostgreSQL model
+- [x] The new T-7 threat has a real mitigation already implemented in the
+      system's design, not a placeholder
+- [x] NFR-009's metric names a concrete, greppable check for both engines
+- [x] Reviewed and approved by Sergio and Angel (Tech Lead)
+
+Closes HU-DOCS-83 (part of HU-14).
 ```
 
-No "Modified or superseded by" cell changes: with Option A, ADR-013 replaces no decision.
-
----
-
-## 2. Issue for the instructor
-
-**Title:** `Question: does synkro-auth-api satisfy the cross-cutting security service?`
-
-**Body:**
-
-```markdown
-## Question
-
-Does `synkro-auth-api` count as the system's cross-cutting security service, or is a separate cross-cutting repository required?
-
-## What `synkro-auth-api` already does
-
-- Manages the identity of the system's users: credentials and roles.
-- Is the only holder of the RS256 private key.
-- Issues the tokens of people (login, refresh, logout) and the service tokens of `synkro-workflow` and `synkro-worker`.
-- Every other service validates tokens locally with its public key, without calling it.
-
-Its repositories are `synkro-auth-db`, `synkro-auth-api` and `synkro-auth-portal`.
-
-## What we propose
-
-Keep `synkro-auth-api` as the security service, with no new repository. A second service that only signs tokens would add a component to every login, a new contract to verify credentials, and the question of who issues its own service token.
-
-## Decision record
-
-`05-architecture/decisions/records/ADR-013-identity-as-cross-cutting-security.md`, status `Proposed` until this issue is answered (HU-ARQ-26).
-
-## If a separate repository is required
-
-We will record that option in the same ADR and request the repository in a new issue.
-```
-
----
-
-## 3. Text for `02-domain/domain-map.md` (only when Option A is confirmed)
-
-### In the Auth bounded context, add this line after its **Responsibility**
-
-```markdown
-**Role in the system:** cross-cutting security service. It manages identity and issues every token, for people and for services; no other component signs tokens (ADR-006, ADR-013).
-```
-
-### Replace the note under "Relationships between contexts"
-
-Current:
-
-```markdown
-**Note:** no context is upstream of Auth.
-```
-
-New:
-
-```markdown
-**Note:** no context is upstream of Auth. Auth is the system's cross-cutting security service (ADR-013): every context, `synkro-workflow` and `synkro-worker` depend on it to trust a token, and it depends on none of them.
-```
-
-### Commit of the second pull request
-
-`docs(architecture): accept ADR-013 and state the security role of auth in the domain map`
