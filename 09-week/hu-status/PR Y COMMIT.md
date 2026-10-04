@@ -1,19 +1,18 @@
 
----
 
 **Rama:**
 ```
-docs/align-products-api-catalog-contract
+docs/align-workflow-saga-contract
 ```
 
 **Commit:**
 ```
-docs(api): rewrite products contract for catalog, categories and stock adjustments
+docs(api): rewrite workflow contract for the saga resource with persisted state
 ```
 
 **Título del PR:**
 ```
-docs(api): rewrite products contract for catalog, categories and stock adjustments
+docs(api): rewrite workflow contract for the saga resource with persisted state
 ```
 
 **Descripción del PR:**
@@ -22,46 +21,47 @@ docs(api): rewrite products contract for catalog, categories and stock adjustmen
 
 ### Summary
 
-Rewrites `synkro-products-api.yaml` from scratch to match ADR-004
-Decisions 2 (categories) and 4 (product catalog and stock adjustments),
-replacing the pre-ADR-004 contract that still had `PATCH /stock` and
-a "KNOWN GAP" note about missing categories.
+Rewrites `synkro-workflow.yaml` from scratch to match ADR-007
+Decision 2 (saga as a resource with idempotent steps) and ADR-004
+Decision 6 (endpoint register). Replaces the pre-ADR-007 contract that
+still routed to `POST /api/sales`, returned the Sale object directly,
+had no idempotency, no GET for saga state, and referenced ADR-003's
+stateless orchestration.
 
 ### Changes
 
-- **11 endpoints** covering the full product and category lifecycle
-  plus manual stock adjustments and the health check.
-- `PATCH /api/products/{id}/stock` removed (ADR-004 Decision 4);
-  replaced by `POST /api/v1/products/{id}/stock-adjustments` with
-  Idempotency-Key, delta, reason, and adjustedBy from the token's sub.
-- Category CRUD under `/api/v1/products/categories` (ADR-004 Decision
-  2), with duplicate-name and active-products-on-deactivate guards.
-- All money fields are `…Cents` as `integer` (int64) — ADR-005
-  Decision 3.
-- All schemas reference `_shared.yaml` for Error, PageMeta, parameters
-  and common responses.
-- Health check documents connectivity to `products_schema` in the
-  shared instance (ADR-009, cross-cutting.md §4).
-- Server URL uses `synkro-products-api:8080` (inside the platform
-  network, not published).
+- **POST /api/v1/sagas/register-sale**: starts the saga with the
+  person's token, Idempotency-Key, customerId and lines (no prices —
+  resolved by step 2). Answers 201 with the saga (COMPLETED if steps
+  finished, RUNNING if timeout). Same key answers 200 idempotently.
+- **GET /api/v1/sagas/{id}**: returns the saga's external state
+  (status, completedSteps, failedStep, saleId). Never exposes internal
+  fields (input, step_results, error_detail).
+- **SagaResponse schema**: 4 statuses (RUNNING, COMPLETED,
+  COMPENSATED, FAILED) matching the CHECK constraint in models.md's
+  saga_instance table.
+- **Health check**: documents connectivity to workflow_schema in the
+  shared instance (ADR-009).
+- **Server URL**: synkro-workflow:8080 inside the platform network.
+- **Stack**: Java / Spring Boot (ADR-008), no longer TBD.
 
-### What is NOT in this contract
+### What was removed
 
-Stock reservations (create, release) and stock alerts (list, create,
-resolve) belong to HU-DOCS-58 and will be added in a follow-up PR.
+- `POST /api/sales` route — replaced by `/api/v1/sagas/register-sale`
+- Direct `Sale` response from sales-api — replaced by `SagaResponse`
+- References to ADR-003 stateless orchestration — superseded by ADR-007
+- References to outbox and SaleCompleted — removed by ADR-007 Decision 5
+- TBD stack note — resolved by ADR-008
 
 ### Definition of Done
 
-- [x] Contract contains all catalog, category and manual-stock-adjustment endpoints from ADR-004
-- [x] `PATCH /api/products/{id}/stock` is absent (removed by ADR-004)
-- [x] Every path cites the decision that introduced it (ADR-001 §8 or ADR-004)
-- [x] Money fields named `…Cents` and typed as integer (ADR-005 Decision 3)
-- [x] Role and permission requirements per endpoint documented and consistent with authentication.md
-- [x] Schemas reference `_shared.yaml` components
-- [x] Reviewed and approved by Angel (Tech Lead, ADR-004 co-author) and Jordan (ADR-004 co-author)
+- [x] Contract contains POST /api/v1/sagas/register-sale and GET /api/v1/sagas/{id}
+- [x] POST requires person's Bearer token and Idempotency-Key
+- [x] Response schema includes status (RUNNING, COMPLETED, COMPENSATED, FAILED) and per-step status
+- [x] GET response includes failedStep and error when status is COMPENSATED or FAILED
+- [x] Schemas reference _shared.yaml for common error and pagination components
+- [x] Reviewed and approved by Angel (Tech Lead) and Santiago
 
-**Reviewers:** Angel and Jordan.
+**Reviewers:** Angel (Tech Lead, validates consistency with other contracts) and Santiago (reviewed deployment where the workflow configuration is located).
 
-Closes HU-DOCS-57 (part of HU-11).
-
-
+Closes HU-DOCS-60 (part of HU-11).

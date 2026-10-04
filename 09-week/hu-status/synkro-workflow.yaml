@@ -1,0 +1,297 @@
+openapi: 3.0.3
+info:
+  title: SynkroTech Workflow Service API
+  version: 2.0.0
+  description: >
+    The sale-registration saga, exposed as a resource. The frontend
+    starts a sale here; the workflow orchestrates three steps
+    (validate-customer, reserve-stock, register-sale) with persisted
+    state after every step, idempotent retries and compensation
+    (ADR-007 Decision 2).
+
+
+    This is the only externally-facing path of synkro-workflow. The
+    gateway routes `/api/v1/sagas/*` here (ADR-008). The internal
+    calls to synkro-customers-api, synkro-products-api and synkro-sales-api use the
+    workflow's service token and are not part of this contract.
+
+
+    Stack: Java / Spring Boot (ADR-008).
+
+servers:
+  - url: http://synkro-workflow:8080/api/v1
+    description: Inside the platform network (not published)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Sagas
+    description: Sale-registration saga resource (ADR-007 Decision 2, ADR-004 Decision 6)
+  - name: Health
+    description: Health check (cross-cutting.md §4)
+
+paths:
+
+  # ─── Sagas ─────────────────────────────────────────────────────────────
+
+  /sagas/register-sale:
+    post:
+      operationId: startRegisterSaleSaga
+      summary: Start a sale-registration saga
+      tags: [Sagas]
+      description: >
+        Starts the register-sale saga. The request carries only what
+        the frontend knows: which customer and which products with
+        their quantities. The workflow resolves each product's current
+        price during step 2 (reserve-stock) — the frontend never
+        supplies unitPrice or subtotal.
+
+
+        Requires the person's Bearer token (ADMIN or SALESPERSON) and
+        Idempotency-Key. The first request answers 201 with Location;
+        the same key answers 200 with the same saga and runs no step
+        again.
+
+
+        The POST runs the steps before answering whenever they finish
+        within the saga's request timeout; otherwise it answers with
+        the saga in RUNNING, and the portal reads it with GET until
+        it ends.
+
+
+        ADR-007 Decision 2, ADR-004 Decision 6.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StartSagaRequest'
+      responses:
+        '201':
+          description: >
+            Saga started. If all steps completed within the request
+            timeout, status is COMPLETED and saleId is present.
+            Otherwise status is RUNNING.
+          headers:
+            Location:
+              $ref: '_shared.yaml#/components/headers/Location'
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SagaResponse'
+        '200':
+          description: >
+            Idempotent replay — same saga returned, no step run again.
+            Status may be RUNNING, COMPLETED, COMPENSATED or FAILED
+            depending on where the saga is.
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SagaResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          description: >
+            Role not authorized (INVENTORY has no access to sales).
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+
+  /sagas/{id}:
+    get:
+      operationId: getSaga
+      summary: Get a saga by ID
+      tags: [Sagas]
+      description: >
+        Returns the saga's current state. The portal polls this
+        endpoint when the POST answered with RUNNING. The
+        representation shows status, completedSteps, failedStep
+        (when compensated or failed) and saleId (when completed).
+        It never shows internal details (input, step_results,
+        error_detail). Allowed to ADMIN and SALESPERSON.
+        ADR-007 Decision 2, ADR-004 Decision 6.
+      parameters:
+        - $ref: '#/components/parameters/SagaId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Saga found
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SagaResponse'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+
+  # ─── Health ────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      tags: [Health]
+      security: []
+      description: >
+        Checks connectivity to workflow_schema in the shared instance.
+        Public — no token required (cross-cutting.md §4).
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Unhealthy — database connectivity lost
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+# ─── Components ────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        RS256 JWT validated locally by this service (ADR-006). The
+        gateway only checks presence; this service verifies signature,
+        exp, sub and role/permissions. The sub of the person's token
+        becomes the saga's initiatedBy.
+
+  parameters:
+    SagaId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+
+    # ── Request ──────────────────────────────────────────────────────
+
+    StartSagaRequest:
+      type: object
+      required: [customerId, lines]
+      description: >
+        Only what the frontend knows. The workflow resolves prices
+        during step 2 (reserve-stock). createdBy is taken from the
+        sub of the person's validated token, not from the body.
+      properties:
+        customerId:
+          type: string
+          format: uuid
+          description: The customer to associate the sale with. Validated in step 1.
+        lines:
+          type: array
+          minItems: 1
+          description: Products and quantities. Prices are resolved by the saga.
+          items:
+            $ref: '#/components/schemas/SagaLineRequest'
+
+    SagaLineRequest:
+      type: object
+      required: [productId, quantity]
+      properties:
+        productId:
+          type: string
+          format: uuid
+        quantity:
+          type: integer
+          minimum: 1
+
+    # ── Response ─────────────────────────────────────────────────────
+
+    SagaResponse:
+      type: object
+      required: [sagaId, sagaType, status, completedSteps, createdAt, updatedAt]
+      description: >
+        The saga's externally visible state. Internal fields (input,
+        step_results, error_detail) are never returned (ADR-007).
+      properties:
+        sagaId:
+          type: string
+          format: uuid
+        sagaType:
+          type: string
+          enum: [register-sale]
+        status:
+          type: string
+          enum: [RUNNING, COMPLETED, COMPENSATED, FAILED]
+          description: >
+            RUNNING: steps still executing. COMPLETED: all steps
+            succeeded, saleId is present. COMPENSATED: a step failed
+            and compensation ran successfully. FAILED: a compensation
+            failed after bounded retries — a person must decide
+            (ADR-007).
+        completedSteps:
+          type: array
+          items:
+            type: string
+            enum: [validate-customer, reserve-stock, register-sale]
+          description: Steps completed so far, in order.
+        failedStep:
+          type: string
+          enum: [validate-customer, reserve-stock, register-sale]
+          description: >
+            Present when status is COMPENSATED or FAILED. The step
+            whose business rejection or error caused the saga to stop.
+        saleId:
+          type: string
+          format: uuid
+          description: >
+            Present only when status is COMPLETED. The sale registered
+            in sales-api by step 3.
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    HealthResponse:
+      type: object
+      required: [status, service, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        service:
+          type: string
+          example: synkro-workflow
+        timestamp:
+          type: string
+          format: date-time
+        dependencies:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [ok, down]
