@@ -1,0 +1,383 @@
+openapi: 3.0.3
+info:
+  title: SynkroTech Customers Service API
+  version: 2.0.0
+  description: >
+    Customer registration, update, lookup and soft deletion. The point of
+    sale finds a customer by identity document with the list endpoint
+    (ADR-004 Decision 1), and the sale-registration saga reads a customer by
+    id in its first step, validate-customer (ADR-007).
+
+
+    Endpoints: ADR-001 §8 (create, get, update, deactivate) and ADR-004
+    Decision 1 (list with filters), registered in the ADR-004 Decision 6
+    register.
+
+
+    Roles: ADMIN and SALESPERSON use every operation; INVENTORY has no
+    access to customers and always receives 403. synkro-workflow reads a
+    customer by id with its service token (customers:read, ADR-006).
+    Customers never calls another service.
+
+
+    Money does not appear in this contract. Every creation requires
+    Idempotency-Key (ADR-005 Decision 4).
+
+servers:
+  - url: http://synkro-customers-api:8080/api/v1
+    description: Inside the platform network (not published)
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Customers
+    description: Customer lifecycle (ADR-001 §8, ADR-004 Decision 1)
+  - name: Health
+    description: Health check (cross-cutting.md §4)
+
+paths:
+
+  # ─── Customers ─────────────────────────────────────────────────────────
+
+  /customers:
+    get:
+      operationId: listCustomers
+      summary: List customers (paginated)
+      tags: [Customers]
+      description: >
+        Paginated, newest first. Optional filters: identityDocument (exact
+        match) and active. It serves both the point-of-sale lookup and the
+        customer list of the portal (ADR-004 Decision 1). The identity
+        document is unique across all customers, so that filter returns at
+        most one customer.
+
+
+        Without active, active and inactive customers are listed, so the
+        point of sale can see that a customer exists but is inactive and
+        cannot be used on a new sale. Allowed to ADMIN and SALESPERSON.
+
+
+        An unknown filter or a limit out of range answers 400
+        VALIDATION_ERROR.
+        ADR-004 Decision 1.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/PageParam'
+        - $ref: '_shared.yaml#/components/parameters/LimitParam'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+        - name: identityDocument
+          in: query
+          required: false
+          description: Exact match on the cédula or NIT.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 30
+        - name: active
+          in: query
+          required: false
+          schema:
+            type: boolean
+      responses:
+        '200':
+          description: Paginated list of customers
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/CustomerResponse'
+                  meta:
+                    $ref: '_shared.yaml#/components/schemas/PageMeta'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+
+    post:
+      operationId: createCustomer
+      summary: Register a customer
+      tags: [Customers]
+      description: >
+        Creates an active customer. The identity document must not belong to
+        any other customer, active or not; otherwise the answer is 422
+        BUSINESS_RULE_VIOLATION with identityDocument in details. Requires
+        Idempotency-Key: the first request answers 201 with Location, the
+        same key answers 200 with the same customer. Allowed to ADMIN and
+        SALESPERSON.
+        ADR-001 §8.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerRequest'
+      responses:
+        '201':
+          description: Customer created
+          headers:
+            Location:
+              $ref: '_shared.yaml#/components/headers/Location'
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerResponse'
+        '200':
+          description: Idempotent replay — same customer returned, nothing created
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '422':
+          $ref: '_shared.yaml#/components/responses/UnprocessableEntity'
+
+  /customers/{id}:
+    get:
+      operationId: getCustomer
+      summary: Get a customer by ID
+      tags: [Customers]
+      description: >
+        Returns the customer if it exists and is active; a customer that
+        does not exist or is inactive answers 404, so a client that needs to
+        see inactive customers uses the list with active=false. Allowed to
+        ADMIN, SALESPERSON and the workflow's service token (customers:read),
+        which reads the customer in saga step 1 (validate-customer).
+        ADR-001 §8, ADR-006, ADR-007.
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Customer found
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerResponse'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+
+    put:
+      operationId: updateCustomer
+      summary: Update a customer
+      tags: [Customers]
+      description: >
+        Full replacement of the editable fields: name, identity document and
+        the optional contact fields. An identity document that belongs to
+        another customer answers 422 BUSINESS_RULE_VIOLATION with
+        identityDocument in details. A customer that does not exist or is
+        inactive answers 404. Allowed to ADMIN and SALESPERSON.
+        ADR-001 §8.
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerRequest'
+      responses:
+        '200':
+          description: Customer updated
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+        '422':
+          $ref: '_shared.yaml#/components/responses/UnprocessableEntity'
+
+    delete:
+      operationId: deactivateCustomer
+      summary: Deactivate a customer (soft delete)
+      tags: [Customers]
+      description: >
+        Sets active = false; it never deletes the row, and the sales
+        history of the customer stays intact. A deactivated customer cannot
+        be linked to new sales. Answers 200 with the updated resource, not
+        204, so the caller sees the resulting state. Deactivating a customer
+        that is already inactive answers 200 and changes nothing: a
+        transition that was already done (07-api/guidelines.md, "Standard
+        responses"). Allowed to ADMIN and SALESPERSON.
+        ADR-001 §8.
+      parameters:
+        - $ref: '#/components/parameters/CustomerId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Customer deactivated (or already inactive)
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerResponse'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+
+  # ─── Health ────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      operationId: healthCheck
+      summary: Health check
+      tags: [Health]
+      security: []
+      description: >
+        Checks connectivity to customers_schema in the shared instance
+        (ADR-009). Public: no token required (cross-cutting.md §4).
+      responses:
+        '200':
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+        '503':
+          description: Unhealthy — database connectivity lost
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+# ─── Components ────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        RS256 JWT validated locally by this service (ADR-006). The
+        gateway only checks presence; this service verifies signature,
+        exp and sub, and the role or permission of the caller.
+
+  parameters:
+    CustomerId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+
+    # ── Request ──────────────────────────────────────────────────────
+
+    CustomerRequest:
+      type: object
+      required: [name, identityDocument]
+      description: >
+        email, phone and address are nullable: not every walk-in customer
+        provides them (06-data/models.md). The limits are the ones of the
+        table.
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        identityDocument:
+          type: string
+          minLength: 1
+          maxLength: 30
+          description: Cédula or NIT. Unique across all customers, active or not.
+        email:
+          type: string
+          format: email
+          nullable: true
+          maxLength: 255
+        phone:
+          type: string
+          nullable: true
+          maxLength: 20
+        address:
+          type: string
+          nullable: true
+          maxLength: 255
+
+    # ── Responses ────────────────────────────────────────────────────
+
+    CustomerResponse:
+      allOf:
+        - $ref: '#/components/schemas/CustomerRequest'
+        - type: object
+          required: [customerId, registrationDate, active]
+          properties:
+            customerId:
+              type: string
+              format: uuid
+            registrationDate:
+              type: string
+              format: date-time
+            active:
+              type: boolean
+              description: >
+                false means this customer cannot be linked to a new sale
+                (02-domain/entities-and-rules.md).
+
+    HealthResponse:
+      type: object
+      required: [status, service, timestamp]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        service:
+          type: string
+          example: synkro-customers-api
+        timestamp:
+          type: string
+          format: date-time
+        dependencies:
+          type: object
+          properties:
+            database:
+              type: string
+              enum: [ok, down]
