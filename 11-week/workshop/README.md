@@ -4,5 +4,5 @@
 - TEAM: synkro-tech
 - DOCS_REPO: https://github.com/code-corhuila/synkro-docs
 - REFLECTION_DOC:https://docs.google.com/document/d/1m6I_DHEyFGBS9Qatmg6dprfiL6rRGgTfKo4TXa0CkXc/edit?usp=sharing
-- JOURNEY: To be defined in CP1
+- JOURNEY: Register a sale with customer validation and stock reservation
 <!-- CONFIG-END -->
