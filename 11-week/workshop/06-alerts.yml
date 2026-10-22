@@ -1,0 +1,81 @@
+# Burn-rate alerts for POST /api/v1/sagas/register-sale (synkro-workflow)
+# SLO 1 availability 99.5% -> error budget 0.005
+# SLO 2 latency 99.5% in 1 s or less -> budget 0.005
+groups:
+  - name: synkro-register-sale-sli
+    rules:
+      - record: synkro:register_sale_error_ratio:rate5m
+        expr: sum(rate(workflow_requests_total{outcome="error"}[5m])) / sum(rate(workflow_requests_total[5m]))
+      - record: synkro:register_sale_error_ratio:rate30m
+        expr: sum(rate(workflow_requests_total{outcome="error"}[30m])) / sum(rate(workflow_requests_total[30m]))
+      - record: synkro:register_sale_error_ratio:rate1h
+        expr: sum(rate(workflow_requests_total{outcome="error"}[1h])) / sum(rate(workflow_requests_total[1h]))
+      - record: synkro:register_sale_error_ratio:rate6h
+        expr: sum(rate(workflow_requests_total{outcome="error"}[6h])) / sum(rate(workflow_requests_total[6h]))
+      - record: synkro:register_sale_slow_ratio:rate5m
+        expr: |
+          1 - sum(rate(workflow_request_duration_seconds_bucket{outcome!="error",le="1.0"}[5m]))
+            / sum(rate(workflow_request_duration_seconds_count{outcome!="error"}[5m]))
+      - record: synkro:register_sale_slow_ratio:rate1h
+        expr: |
+          1 - sum(rate(workflow_request_duration_seconds_bucket{outcome!="error",le="1.0"}[1h]))
+            / sum(rate(workflow_request_duration_seconds_count{outcome!="error"}[1h]))
+
+  - name: synkro-register-sale-alerts
+    rules:
+      - alert: RegisterSaleAvailabilityFastBurn
+        expr: |
+          synkro:register_sale_error_ratio:rate1h > (14.4 * 0.005)
+          and synkro:register_sale_error_ratio:rate5m > (14.4 * 0.005)
+          and sum(increase(workflow_requests_total{outcome="error"}[1h])) >= 2
+        for: 2m
+        labels:
+          severity: page
+          team: synkro-tech
+          slo: register-sale-availability
+        annotations:
+          summary: "Register-sale is spending its availability budget 14.4 times too fast"
+          description: "Error ratio in the last hour is {{ $value | humanizePercentage }}. At this rate the 30-day budget of 30 failed sales lasts about 2 days."
+          runbook_url: "https://github.com/SergioAndres17/sistemas-distribuidos-2026-b-g1/blob/main/11-week/workshop/07-runbook.md"
+
+      - alert: RegisterSaleAvailabilitySlowBurn
+        expr: |
+          synkro:register_sale_error_ratio:rate6h > (6 * 0.005)
+          and synkro:register_sale_error_ratio:rate30m > (6 * 0.005)
+          and sum(increase(workflow_requests_total[6h])) >= 30
+        for: 5m
+        labels:
+          severity: ticket
+          team: synkro-tech
+          slo: register-sale-availability
+        annotations:
+          summary: "Register-sale is spending its availability budget 6 times too fast"
+          description: "Error ratio in the last 6 hours is {{ $value | humanizePercentage }}. Review it during working hours."
+          runbook_url: "https://github.com/SergioAndres17/sistemas-distribuidos-2026-b-g1/blob/main/11-week/workshop/07-runbook.md"
+
+      - alert: RegisterSaleLatencyFastBurn
+        expr: |
+          synkro:register_sale_slow_ratio:rate1h > (14.4 * 0.005)
+          and synkro:register_sale_slow_ratio:rate5m > (14.4 * 0.005)
+          and sum(increase(workflow_requests_total[1h])) >= 10
+        for: 2m
+        labels:
+          severity: page
+          team: synkro-tech
+          slo: register-sale-latency
+        annotations:
+          summary: "Register-sale requests over 1 s are spending the latency budget 14.4 times too fast"
+          description: "Slow ratio in the last hour is {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/SergioAndres17/sistemas-distribuidos-2026-b-g1/blob/main/11-week/workshop/07-runbook.md#latency-variant"
+
+      - alert: RegisterSaleMetricsAbsent
+        expr: absent(workflow_requests_total)
+        for: 5m
+        labels:
+          severity: page
+          team: synkro-tech
+          slo: register-sale-availability
+        annotations:
+          summary: "No register-sale metrics from synkro-workflow for 5 minutes"
+          description: "Without this series the burn-rate alerts cannot fire. Check that synkro-workflow is running and scraped."
+          runbook_url: "https://github.com/SergioAndres17/sistemas-distribuidos-2026-b-g1/blob/main/11-week/workshop/07-runbook.md"
