@@ -1,0 +1,716 @@
+openapi: '3.0.3'
+info:
+  title: 'SynkroTech Sales Service API'
+  version: '2.1.1'
+  description: >
+    Sale registration (called internally by the workflow's saga, not directly by the frontend), sale queries and the three report endpoints (FR-008, FR-009).
+
+
+    The sale is registered by the saga's step 3 with a service token holding `sales:register` (ADR-006, ADR-007 Decision 2). A sale and its lines are stored as one document; reports aggregate the `sale` collection live (ADR-002, ADR-010) — no summary is stored (ADR-005 Decision 5, which supersedes ADR-002's resolution to keep the table unpopulated).
+
+
+    Money is in minor units (1/100 COP), named `…Cents` as integer (ADR-005 Decision 3).
+
+servers:
+  - url: 'http://synkro-sales-api:8080/api/v1'
+    description: 'Inside the platform network (not published)'
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: 'Sales'
+    description: 'Sale registration and queries (ADR-001 §8, ADR-004 Decision 5)'
+  - name: 'Reports'
+    description: 'Daily, monthly and top-products reports (FR-008, FR-009, ADR-004 Decision 3)'
+  - name: 'Health'
+    description: 'Health check (cross-cutting.md §4)'
+
+paths:
+
+  # ─── Sales ─────────────────────────────────────────────────────────────
+
+  /sales:
+    get:
+      operationId: 'listSales'
+      summary: 'List sales (paginated)'
+      tags: [ 'Sales' ]
+      description: >
+        Paginated, newest first. Filters: from, to (RFC 3339 full dates, both inclusive, UTC days), customerId. A SALESPERSON only sees sales whose createdBy matches their own sub (ADR-002, ADR-006). Allowed to ADMIN and SALESPERSON. INVENTORY has no access. ADR-004 Decision 5.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/PageParam'
+        - $ref: '_shared.yaml#/components/parameters/LimitParam'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - name: 'customerId'
+          in: 'query'
+          required: false
+          schema:
+            type: 'string'
+            format: 'uuid'
+      responses:
+        '200':
+          description: 'Paginated list of sales'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                type: 'object'
+                required: [ 'data', 'meta' ]
+                properties:
+                  data:
+                    type: 'array'
+                    items:
+                      $ref: '#/components/schemas/SaleResponse'
+                  meta:
+                    $ref: '_shared.yaml#/components/schemas/PageMeta'
+        '400':
+          description: 'Invalid query: malformed/unknown/empty/repeated filters, invalid page/limit or UTC date, from later than to, or pagination offset (page - 1) * limit exceeding the signed 64-bit range. Equal from/to dates are valid. Returns the shared safe VALIDATION_ERROR envelope.'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+              examples:
+                reversedDates:
+                  summary: 'from must be on or before to'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'from'
+                        message: 'must be on or before to'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+                offsetOverflow:
+                  summary: 'page=9223372036854775807 and limit=100 exceed the supported offset'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'page'
+                        message: 'pagination offset exceeds supported range'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+    post:
+      operationId: 'registerSale'
+      summary: 'Register a sale (saga step 3 — internal only)'
+      tags: [ 'Sales' ]
+      description: >
+        Called only by the workflow's service token holding `sales:register` (ADR-006). Not routed by the gateway as a direct frontend action — the frontend starts a sale through `POST /api/v1/sagas/register-sale` on synkro-workflow (ADR-007 Decision 2).
+
+
+        By the time this is called, the customer is confirmed active (step 1) and stock is reserved with frozen prices (step 2). This endpoint persists the sale with the lines, their unit prices and createdBy from the saga. It computes subtotals (quantity * unitPriceCents) and totalCents (sum of subtotals); both rules are enforced by the service's domain. A sale has at most 100 lines.
+
+
+        Requires Idempotency-Key (<sagaId>:register-sale). ADR-001 §8, ADR-004 Decision 6, ADR-007 Decision 2.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterSaleRequest'
+      responses:
+        '200':
+          description: 'Idempotent replay — same sale returned, nothing created'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleResponse'
+        '201':
+          description: 'Sale registered'
+          headers:
+            Location:
+              $ref: '_shared.yaml#/components/headers/Location'
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '422':
+          description: >
+            An internal invariant failed while computing the sale's amounts — the client never sends subtotalCents or totalCents (the service always computes them from quantity and the reservation's frozen unitPriceCents). This guards against a corrupted upstream reservation or an amount overflowing int64's range (see SaleDetailRequest's unitPriceCents).
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+              example:
+                error: 'BUSINESS_RULE_VIOLATION'
+                message: 'computed subtotalCents overflowed the supported range'
+                details:
+                  - field: 'details[0].unitPriceCents'
+                    message: 'quantity * unitPriceCents exceeds int64''s maximum'
+                traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  /sales/{id}:
+    get:
+      operationId: 'getSale'
+      summary: 'Retrieve a sale by ID'
+      tags: [ 'Sales' ]
+      description: >-
+        Returns the sale with its details. ADMIN sees any sale; SALESPERSON sees only sales whose createdBy matches their own sub — otherwise 403. INVENTORY has no access. ADR-001 §8, ADR-002.
+
+
+        The path ID must be a canonical lowercase UUID. Malformed IDs and any query string return 400 VALIDATION_ERROR before the query use case. Persistence or unsupported restoration returns a generic 500 INTERNAL_ERROR, never BSON or driver details.
+      parameters:
+        - $ref: '#/components/parameters/SaleId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: 'Sale found'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SaleResponse'
+        '400':
+          description: 'Malformed canonical UUID or any supplied detail-query parameters.'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '_shared.yaml#/components/schemas/Error'
+                  - type: 'object'
+                    properties:
+                      error:
+                        type: 'string'
+                        enum:
+                          - 'VALIDATION_ERROR'
+                      message:
+                        type: 'string'
+                      details:
+                        type: 'array'
+                        items:
+                          $ref: '_shared.yaml#/components/schemas/ErrorDetail'
+                      traceId:
+                        type: 'string'
+                    additionalProperties: false
+              examples:
+                rejected:
+                  summary: 'Generic safe error; no stored request or owner'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'query'
+                        message: 'detail accepts no query parameters'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          description: >
+            INVENTORY role, or SALESPERSON requesting another user's sale.
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  # ─── Reports ───────────────────────────────────────────────────────────
+
+  /sales/reports/daily:
+    get:
+      operationId: 'dailyReport'
+      summary: 'Daily sales totals (FR-008)'
+      tags: [ 'Reports' ]
+      description: >-
+        SUM(totalCents) grouped by UTC day, newest first. SALESPERSON sees only their own sales' contribution. Optional from/to (RFC 3339 full dates, both inclusive, UTC days). Paginated. ADR-002, ADR-004 Decision 3.
+
+
+        Only page, limit, from and to are accepted: unknown, repeated or empty parameters return 400. Ownership is derived from the verified token, never an input filter. Inclusive UTC dates are implemented as date >= from midnight and date < midnight after to. Aggregation and stable ordering precede pagination; total counts groups, not returned rows. Integer aggregation overflow or unrepresentable stored values return generic 500.
+      parameters:
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '_shared.yaml#/components/parameters/PageParam'
+        - $ref: '_shared.yaml#/components/parameters/LimitParam'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: 'Paginated list of daily totals'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                type: 'object'
+                required: [ 'data', 'meta' ]
+                properties:
+                  data:
+                    type: 'array'
+                    items:
+                      $ref: '#/components/schemas/DailyTotalResponse'
+                  meta:
+                    $ref: '_shared.yaml#/components/schemas/PageMeta'
+        '400':
+          description: 'Invalid query: malformed/unknown/empty/repeated filters, invalid page/limit or UTC date, from later than to, or pagination offset (page - 1) * limit exceeding the signed 64-bit range. Equal from/to dates are valid. Returns the shared safe VALIDATION_ERROR envelope.'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+              examples:
+                reversedDates:
+                  summary: 'from must be on or before to'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'from'
+                        message: 'must be on or before to'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+                offsetOverflow:
+                  summary: 'page=9223372036854775807 and limit=100 exceed the supported offset'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'page'
+                        message: 'pagination offset exceeds supported range'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  /sales/reports/monthly:
+    get:
+      operationId: 'monthlyReport'
+      summary: 'Monthly sales totals (FR-008)'
+      tags: [ 'Reports' ]
+      description: >-
+        Same aggregation as /reports/daily, grouped by month. The month field is the first day of the month (e.g. 2026-09-01). ADR-002, ADR-004 Decision 3.
+
+
+        Only page, limit, from and to are accepted: unknown, repeated or empty parameters return 400. Ownership is derived from the verified token, never an input filter. Inclusive UTC dates are implemented as date >= from midnight and date < midnight after to. Aggregation and stable ordering precede pagination; total counts groups, not returned rows. Integer aggregation overflow or unrepresentable stored values return generic 500.
+      parameters:
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '_shared.yaml#/components/parameters/PageParam'
+        - $ref: '_shared.yaml#/components/parameters/LimitParam'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: 'Paginated list of monthly totals'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                type: 'object'
+                required: [ 'data', 'meta' ]
+                properties:
+                  data:
+                    type: 'array'
+                    items:
+                      $ref: '#/components/schemas/MonthlyTotalResponse'
+                  meta:
+                    $ref: '_shared.yaml#/components/schemas/PageMeta'
+        '400':
+          description: 'Invalid query: malformed/unknown/empty/repeated filters, invalid page/limit or UTC date, from later than to, or pagination offset (page - 1) * limit exceeding the signed 64-bit range. Equal from/to dates are valid. Returns the shared safe VALIDATION_ERROR envelope.'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+              examples:
+                reversedDates:
+                  summary: 'from must be on or before to'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'from'
+                        message: 'must be on or before to'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+                offsetOverflow:
+                  summary: 'page=9223372036854775807 and limit=100 exceed the supported offset'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'page'
+                        message: 'pagination offset exceeds supported range'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  /sales/reports/top-products:
+    get:
+      operationId: 'topProductsReport'
+      summary: 'Best-selling products (FR-009)'
+      tags: [ 'Reports' ]
+      description: >-
+        SUM(quantity) grouped by productId, descending. SALESPERSON sees only products they sold. Optional from/to. Paginated (default limit 20, same as any list). ADR-002, ADR-004 Decision 3.
+
+
+        Only page, limit, from and to are accepted: unknown, repeated or empty parameters return 400. Ownership is derived from the verified token, never an input filter. Inclusive UTC dates are implemented as date >= from midnight and date < midnight after to. Aggregation and stable ordering precede pagination; total counts groups, not returned rows. Integer aggregation overflow or unrepresentable stored values return generic 500.
+
+
+        Only active sales and active embedded details contribute. Sort by totalQuantity descending, then canonical productId ascending for ties. Revenue uses stored frozen subtotals, never current catalog prices.
+      parameters:
+        - $ref: '#/components/parameters/FromDate'
+        - $ref: '#/components/parameters/ToDate'
+        - $ref: '_shared.yaml#/components/parameters/PageParam'
+        - $ref: '_shared.yaml#/components/parameters/LimitParam'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: 'Paginated list of top-selling products'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                type: 'object'
+                required: [ 'data', 'meta' ]
+                properties:
+                  data:
+                    type: 'array'
+                    items:
+                      $ref: '#/components/schemas/TopProductResponse'
+                  meta:
+                    $ref: '_shared.yaml#/components/schemas/PageMeta'
+        '400':
+          description: 'Invalid query: malformed/unknown/empty/repeated filters, invalid page/limit or UTC date, from later than to, or pagination offset (page - 1) * limit exceeding the signed 64-bit range. Equal from/to dates are valid. Returns the shared safe VALIDATION_ERROR envelope.'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '_shared.yaml#/components/schemas/Error'
+              examples:
+                reversedDates:
+                  summary: 'from must be on or before to'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'from'
+                        message: 'must be on or before to'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+                offsetOverflow:
+                  summary: 'page=9223372036854775807 and limit=100 exceed the supported offset'
+                  value:
+                    error: 'VALIDATION_ERROR'
+                    message: 'Invalid request'
+                    details:
+                      - field: 'page'
+                        message: 'pagination offset exceeds supported range'
+                    traceId: '4f1c2b7e-8a3d-4e21-9b6f-0c5d7a2e1f90'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  # ─── Health ────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      operationId: 'healthCheck'
+      summary: 'Health check'
+      tags: [ 'Health' ]
+      security: []
+      description: >-
+        Checks connectivity to the `sales` database in the MongoDB instance (ADR-010). Public — no token required (cross-cutting.md §4).
+
+
+        Effective URL: http://synkro-sales-api:8080/health. The API server prefix does not apply to this path.
+      responses:
+        '200':
+          description: 'Healthy'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  summary: 'Healthy response shape'
+                  value:
+                    status: 'ok'
+                    service: 'synkro-sales-api'
+                    timestamp: '2026-10-24T20:00:00Z'
+                    dependencies:
+                      database: 'ok'
+        '503':
+          description: 'Unhealthy — database connectivity lost'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                unhealthy:
+                  summary: 'Unhealthy own-store response shape'
+                  value:
+                    status: 'degraded'
+                    service: 'synkro-sales-api'
+                    timestamp: '2026-10-24T20:00:00Z'
+                    dependencies:
+                      database: 'down'
+    servers:
+      - url: 'http://synkro-sales-api:8080'
+        description: 'Unversioned service origin; this overrides the /api/v1 business server'
+
+# ─── Components ────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: 'http'
+      scheme: 'bearer'
+      bearerFormat: 'JWT'
+      description: >
+        RS256 JWT validated locally by this service (ADR-006). The gateway only checks presence; this service verifies signature, exp, sub and role/permissions.
+
+  parameters:
+    SaleId:
+      name: 'id'
+      in: 'path'
+      required: true
+      schema:
+        type: 'string'
+        format: 'uuid'
+        pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+    FromDate:
+      name: 'from'
+      in: 'query'
+      required: false
+      description: >
+        Start date (inclusive), RFC 3339 full date, interpreted as a UTC day. ADR-004 Decision 3.
+      schema:
+        type: 'string'
+        format: 'date'
+        example: '2026-09-01'
+    ToDate:
+      name: 'to'
+      in: 'query'
+      required: false
+      description: >
+        End date (inclusive), RFC 3339 full date, interpreted as a UTC day. ADR-004 Decision 3.
+      schema:
+        type: 'string'
+        format: 'date'
+        example: '2026-09-30'
+
+  schemas:
+
+    # ── Requests ─────────────────────────────────────────────────────
+
+    RegisterSaleRequest:
+      type: 'object'
+      required: [ 'customerId', 'createdBy', 'details' ]
+      description: >
+        Sent by the workflow's saga step 3. The lines carry the frozen unitPriceCents from the stock reservation (ADR-007). createdBy is the sub of the salesperson who started the saga (ADR-002, ADR-006).
+      properties:
+        customerId:
+          type: 'string'
+          format: 'uuid'
+          description: 'External reference to customers domain. Validated in saga step 1.'
+        createdBy:
+          type: 'string'
+          format: 'uuid'
+          description: >
+            Sub of the salesperson's validated token. Accepted only from a caller holding sales:register (ADR-002, ADR-006).
+        details:
+          type: 'array'
+          minItems: 1
+          maxItems: 100
+          items:
+            $ref: '#/components/schemas/SaleDetailRequest'
+
+    SaleDetailRequest:
+      type: 'object'
+      required: [ 'productId', 'quantity', 'unitPriceCents' ]
+      properties:
+        productId:
+          type: 'string'
+          format: 'uuid'
+          description: 'External reference to products domain. Reserved in saga step 2.'
+        quantity:
+          type: 'integer'
+          minimum: 1
+          format: 'int32'
+          maximum: 2147483647
+        unitPriceCents:
+          type: 'integer'
+          format: 'int64'
+          minimum: 1
+          description: >
+            Price frozen by the stock reservation. The service computes subtotalCents = quantity * unitPriceCents in its domain. If that product, or the sum of all lines' subtotalCents, overflows int64's range, the sale is rejected with 422 BUSINESS_RULE_VIOLATION instead of persisting a wrapped or truncated amount.
+
+    # ── Responses ────────────────────────────────────────────────────
+
+    SaleResponse:
+      type: 'object'
+      required: [ 'saleId', 'customerId', 'createdBy', 'date', 'totalCents', 'active', 'details' ]
+      properties:
+        saleId:
+          type: 'string'
+          format: 'uuid'
+        customerId:
+          type: 'string'
+          format: 'uuid'
+        createdBy:
+          type: 'string'
+          format: 'uuid'
+          description: 'Sub of the salesperson (ADR-002).'
+        date:
+          type: 'string'
+          format: 'date-time'
+        totalCents:
+          type: 'integer'
+          format: 'int64'
+          description: 'Sum of all details'' subtotalCents.'
+        active:
+          type: 'boolean'
+        details:
+          type: 'array'
+          items:
+            $ref: '#/components/schemas/SaleDetailResponse'
+
+    SaleDetailResponse:
+      type: 'object'
+      required: [ 'detailId', 'productId', 'quantity', 'unitPriceCents', 'subtotalCents', 'active' ]
+      properties:
+        detailId:
+          type: 'string'
+          format: 'uuid'
+        productId:
+          type: 'string'
+          format: 'uuid'
+        quantity:
+          type: 'integer'
+          format: 'int32'
+          minimum: 1
+          maximum: 2147483647
+        unitPriceCents:
+          type: 'integer'
+          format: 'int64'
+        subtotalCents:
+          type: 'integer'
+          format: 'int64'
+          description: 'Always equals quantity * unitPriceCents (enforced by the domain).'
+        active:
+          type: 'boolean'
+          description: 'Required wire/storage lifecycle flag retained by the approved specification. Known discrepancy TD-012: new domain details are encoded active=true, while the current restoration decoder rejects inactive stored details (and inactive root sales). Domain lifecycle resolution is pending; this contract does not invent a SaleDetail domain field or silently remove the flag.'
+
+    DailyTotalResponse:
+      type: 'object'
+      required: [ 'day', 'dailyTotalCents', 'saleCount' ]
+      properties:
+        day:
+          type: 'string'
+          format: 'date'
+          description: 'UTC day.'
+        dailyTotalCents:
+          type: 'integer'
+          format: 'int64'
+          description: 'SUM(totalCents) of active sales on this day.'
+        saleCount:
+          type: 'integer'
+          description: 'Number of active sales on this day.'
+
+    MonthlyTotalResponse:
+      type: 'object'
+      required: [ 'month', 'monthlyTotalCents', 'saleCount' ]
+      properties:
+        month:
+          type: 'string'
+          format: 'date'
+          description: 'First day of the month (e.g. 2026-09-01).'
+        monthlyTotalCents:
+          type: 'integer'
+          format: 'int64'
+          description: 'SUM(totalCents) of active sales in this month.'
+        saleCount:
+          type: 'integer'
+          description: 'Number of active sales in this month.'
+
+    TopProductResponse:
+      type: 'object'
+      required: [ 'productId', 'totalQuantity', 'totalRevenueCents' ]
+      properties:
+        productId:
+          type: 'string'
+          format: 'uuid'
+        totalQuantity:
+          type: 'integer'
+          description: 'SUM(quantity) of active sale details for this product.'
+        totalRevenueCents:
+          type: 'integer'
+          format: 'int64'
+          description: 'SUM(subtotalCents) of active sale details for this product.'
+
+    HealthResponse:
+      type: 'object'
+      required: [ 'status', 'service', 'timestamp' ]
+      properties:
+        status:
+          type: 'string'
+          enum: [ 'ok', 'degraded' ]
+        service:
+          type: 'string'
+          example: 'synkro-sales-api'
+        timestamp:
+          type: 'string'
+          format: 'date-time'
+        dependencies:
+          type: 'object'
+          properties:
+            database:
+              type: 'string'
+              enum: [ 'ok', 'down' ]
