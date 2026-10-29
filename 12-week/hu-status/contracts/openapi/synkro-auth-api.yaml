@@ -1,0 +1,542 @@
+openapi: '3.0.3'
+info:
+  title: 'SynkroTech Auth Service API'
+  version: '2.1.1'
+  description: >
+    Identity of the system: user registration, login, refresh-token rotation, logout, user lookup and service-token issuance. This service is the only holder of the RS256 private key and signs every token; every other service validates tokens locally with the public key (ADR-006).
+
+
+    This service validates the tokens of incoming requests like any other service: it verifies signature, exp and sub, ignores every X-User-* header and checks the role of the caller in the use case. The gateway only checks that a credential is present.
+
+
+    Endpoints: ADR-001 §8 (register, login, refresh), ADR-006 Decision 2 (service tokens) and ADR-004 Decision 7 (logout, user lookup, service-token lookup), registered in ADR-004 Decision 6.
+
+
+    Public authentication routes: login and refresh; health is also public. Register requires a validated human ADMIN caller (ADR-014 Decision 1). User creation, its idempotency key and its success audit record are committed in one Auth transaction. Initial administrator creation is a manual CLI operation, never a public HTTP endpoint. Login is rate limited at the gateway; the 429 is answered by the gateway, not by this service.
+
+servers:
+  - url: 'http://synkro-auth-api:8080/api/v1'
+    description: 'Inside the platform network (not published)'
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: 'Auth'
+    description: 'Registration, login, refresh and logout (ADR-001 §8, ADR-004 Decision 7)'
+  - name: 'Users'
+    description: 'User lookup (ADR-004 Decision 7)'
+  - name: 'Service tokens'
+    description: 'Tokens of synkro-workflow and synkro-worker (ADR-006 Decision 2, ADR-004 Decision 7)'
+  - name: 'Health'
+    description: 'Health check (cross-cutting.md §4)'
+
+paths:
+
+  # ─── Auth ──────────────────────────────────────────────────────────────
+
+  /auth/register:
+    post:
+      operationId: 'registerUser'
+      summary: 'Register a system user'
+      tags: [ 'Auth' ]
+      security:
+        - bearerAuth: []
+      description: >
+        ADMIN-only operation (ADR-014 Decision 1). The authentication adapter validates the JWT; the use case requires a human ADMIN, including before an idempotent replay. Missing or invalid credentials answer 401; a valid non-ADMIN or SERVICE caller answers 403. The user, idempotency key and successful creation audit record commit in one transaction; audit persistence failure rolls everything back. The password is hashed with bcrypt and never stored or returned in plaintext. Requires Idempotency-Key: the first request answers 201 with Location pointing to GET /auth/users/{id}; the same key answers 200 with the same user. A repeated email answers 422 BUSINESS_RULE_VIOLATION with the field in details. The role SERVICE cannot be requested: it exists only inside service tokens (ADR-006). ADR-001 §8 as modified by ADR-014; ADR-004 Decision 7 remains in force.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '200':
+          description: 'Idempotent replay — same user returned, nothing created'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '201':
+          description: 'User created'
+          headers:
+            Location:
+              $ref: '_shared.yaml#/components/headers/Location'
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '422':
+          $ref: '_shared.yaml#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  /auth/login:
+    post:
+      operationId: 'login'
+      summary: 'Authenticate and obtain a token pair'
+      tags: [ 'Auth' ]
+      security: []
+      description: >
+        Public route (ADR-001 §8). Wrong credentials answer 401 UNAUTHORIZED, and the message never reveals whether the email exists. Rate limited at the gateway (429 TOO_MANY_REQUESTS with Retry-After, answered by the gateway). The access token lasts 1 hour and the refresh token 7 days. ADR-001 §8.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: 'Authenticated'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  /auth/refresh:
+    post:
+      operationId: 'refreshToken'
+      summary: 'Rotate a refresh token for a new token pair'
+      tags: [ 'Auth' ]
+      security: []
+      description: >
+        Public route (ADR-001 §8): it authenticates with the refresh token in the body, not with the Authorization header. Rotation is mandatory, so a refresh token can be used once. If a token that was already used is presented again, every active token of that user is invalidated (00-governance/security-policy.md). Any invalid, expired or already used token answers 401 UNAUTHORIZED. ADR-001 §8.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: 'New token pair issued; the previous refresh token is now invalid'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenPair'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  /auth/logout:
+    post:
+      operationId: 'logout'
+      summary: 'End the session by invalidating its refresh token'
+      tags: [ 'Auth' ]
+      description: >
+        Invalidates the refresh token in the body, so a stolen refresh token does not stay valid for 7 days (ADR-004 Decision 7). It is idempotent: logging out with a token that is already invalid answers 200 and changes nothing. The access token is not revocable and expires on its own (at most 1 hour). Allowed to any authenticated person: ADMIN, SALESPERSON and INVENTORY. A service token cannot be used here. ADR-004 Decision 7.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RefreshRequest'
+      responses:
+        '200':
+          description: 'Session ended (or it was already ended)'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogoutResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  # ─── Users ─────────────────────────────────────────────────────────────
+
+  /auth/users/{id}:
+    get:
+      operationId: 'getUser'
+      summary: 'Get a user by ID'
+      tags: [ 'Users' ]
+      description: >
+        Target of the Location header returned by registration. Allowed to ADMIN only. The password hash is never returned. ADR-004 Decision 7.
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: 'User found'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserResponse'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  # ─── Service tokens ────────────────────────────────────────────────────
+
+  /auth/service-tokens:
+    post:
+      operationId: 'issueServiceToken'
+      summary: 'Issue a service token'
+      tags: [ 'Service tokens' ]
+      description: >
+        Issues the token that synkro-workflow or synkro-worker uses to call other services (ADR-006 Decision 2). Allowed to ADMIN only. The request names the service; the permissions come from the fixed table of ADR-006 and are never taken from the request. The token is a JWT signed with the RS256 key, with sub = the service name, roles = ["SERVICE"], those permissions and an expiry 30 days later.
+
+
+        The token is shown only once, in the 201 response. Requires Idempotency-Key: the same key answers 200 with the token's metadata and never the token. If the response is lost, the metadata can be read with GET /auth/service-tokens/{id}. ADR-006 Decision 2, ADR-004 Decision 7.
+      parameters:
+        - $ref: '_shared.yaml#/components/parameters/IdempotencyKey'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IssueServiceTokenRequest'
+      responses:
+        '200':
+          description: 'Idempotent replay — metadata of the token already issued, never the token'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceTokenResponse'
+        '201':
+          description: 'Token issued; this response is the only one that carries the token'
+          headers:
+            Location:
+              $ref: '_shared.yaml#/components/headers/Location'
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceTokenIssuedResponse'
+        '400':
+          $ref: '_shared.yaml#/components/responses/BadRequest'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  /auth/service-tokens/{id}:
+    get:
+      operationId: 'getServiceToken'
+      summary: 'Get the metadata of a service token'
+      tags: [ 'Service tokens' ]
+      description: >
+        Returns who the token was issued to, its permissions and its dates; never the token itself. Lets an ADMIN confirm an issuance whose response was lost, and see when a token expires, before rotating it. Allowed to ADMIN only. The id is the jti of the token. ADR-004 Decision 7.
+      parameters:
+        - $ref: '#/components/parameters/ServiceTokenId'
+        - $ref: '_shared.yaml#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: 'Token metadata'
+          headers:
+            X-Correlation-Id:
+              $ref: '_shared.yaml#/components/headers/XCorrelationId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceTokenResponse'
+        '401':
+          $ref: '_shared.yaml#/components/responses/Unauthorized'
+        '403':
+          $ref: '_shared.yaml#/components/responses/Forbidden'
+        '404':
+          $ref: '_shared.yaml#/components/responses/NotFound'
+        '500':
+          $ref: '_shared.yaml#/components/responses/InternalError'
+
+  # ─── Health ────────────────────────────────────────────────────────────
+
+  /health:
+    get:
+      operationId: 'healthCheck'
+      summary: 'Health check'
+      tags: [ 'Health' ]
+      security: []
+      description: >-
+        Checks connectivity to auth_schema in the shared instance (ADR-009). Public: no token required (cross-cutting.md §4).
+
+
+        Effective URL: http://synkro-auth-api:8080/health. The API server prefix does not apply to this path.
+      responses:
+        '200':
+          description: 'Healthy'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                healthy:
+                  summary: 'Healthy response shape'
+                  value:
+                    status: 'ok'
+                    service: 'synkro-auth-api'
+                    timestamp: '2026-10-24T20:00:00Z'
+                    dependencies:
+                      database: 'ok'
+        '503':
+          description: 'Unhealthy — database connectivity lost'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+              examples:
+                unhealthy:
+                  summary: 'Unhealthy own-store response shape'
+                  value:
+                    status: 'degraded'
+                    service: 'synkro-auth-api'
+                    timestamp: '2026-10-24T20:00:00Z'
+                    dependencies:
+                      database: 'down'
+    servers:
+      - url: 'http://synkro-auth-api:8080'
+        description: 'Unversioned service origin; this overrides the /api/v1 business server'
+
+# ─── Components ────────────────────────────────────────────────────────
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: 'http'
+      scheme: 'bearer'
+      bearerFormat: 'JWT'
+      description: >
+        RS256 JWT validated locally by this service (ADR-006). The gateway only checks presence; this service verifies signature, exp and sub, and the role of the caller.
+
+  parameters:
+    UserId:
+      name: 'id'
+      in: 'path'
+      required: true
+      schema:
+        type: 'string'
+        format: 'uuid'
+    ServiceTokenId:
+      name: 'id'
+      in: 'path'
+      required: true
+      description: 'The jti of the service token.'
+      schema:
+        type: 'string'
+        format: 'uuid'
+
+  schemas:
+
+    # ── Requests ─────────────────────────────────────────────────────
+
+    RegisterRequest:
+      type: 'object'
+      required: [ 'name', 'email', 'password', 'role' ]
+      properties:
+        name:
+          type: 'string'
+          minLength: 1
+          maxLength: 150
+        email:
+          type: 'string'
+          format: 'email'
+          minLength: 3
+          maxLength: 255
+        password:
+          type: 'string'
+          format: 'password'
+          minLength: 8
+          description: 'Hashed with bcrypt server-side; never stored or returned in plaintext.'
+        role:
+          type: 'string'
+          enum: [ 'ADMIN', 'SALESPERSON', 'INVENTORY' ]
+          description: 'SERVICE is not accepted; it exists only inside service tokens (ADR-006).'
+
+    LoginRequest:
+      type: 'object'
+      required: [ 'email', 'password' ]
+      properties:
+        email:
+          type: 'string'
+          format: 'email'
+        password:
+          type: 'string'
+          format: 'password'
+
+    RefreshRequest:
+      type: 'object'
+      required: [ 'refreshToken' ]
+      properties:
+        refreshToken:
+          type: 'string'
+
+    IssueServiceTokenRequest:
+      type: 'object'
+      required: [ 'service' ]
+      properties:
+        service:
+          type: 'string'
+          enum: [ 'synkro-workflow', 'synkro-worker' ]
+          description: >
+            The service the token is for. Its permissions are the ones fixed in ADR-006 Decision 2; a new permission set needs a new ADR.
+
+    # ── Responses ────────────────────────────────────────────────────
+
+    UserResponse:
+      type: 'object'
+      required: [ 'userId', 'name', 'email', 'role', 'registrationDate', 'active' ]
+      description: 'Mirrors auth_schema.system_user (06-data/models.md) without password_hash.'
+      properties:
+        userId:
+          type: 'string'
+          format: 'uuid'
+        name:
+          type: 'string'
+        email:
+          type: 'string'
+          format: 'email'
+        role:
+          type: 'string'
+          enum: [ 'ADMIN', 'SALESPERSON', 'INVENTORY' ]
+        registrationDate:
+          type: 'string'
+          format: 'date-time'
+        active:
+          type: 'boolean'
+
+    TokenPair:
+      type: 'object'
+      required: [ 'accessToken', 'refreshToken', 'tokenType', 'expiresIn' ]
+      properties:
+        accessToken:
+          type: 'string'
+          description: >
+            RS256 JWT. Claims: sub, roles, permissions, iat, exp, jti (07-api/authentication.md).
+        refreshToken:
+          type: 'string'
+          description: 'Opaque, one-time use, valid for 7 days. Stored hashed, never in plaintext.'
+        tokenType:
+          type: 'string'
+          enum: [ 'Bearer' ]
+        expiresIn:
+          type: 'integer'
+          description: 'Access token lifetime in seconds.'
+          example: 3600
+        user:
+          $ref: '#/components/schemas/UserResponse'
+
+    LogoutResponse:
+      type: 'object'
+      required: [ 'loggedOut' ]
+      properties:
+        loggedOut:
+          type: 'boolean'
+          enum: [ true ]
+
+    ServiceTokenResponse:
+      type: 'object'
+      required: [ 'tokenId', 'service', 'permissions', 'issuedBy', 'issuedAt', 'expiresAt' ]
+      description: 'Metadata of a service token. It never includes the token.'
+      properties:
+        tokenId:
+          type: 'string'
+          format: 'uuid'
+          description: 'The jti of the token.'
+        service:
+          type: 'string'
+          enum: [ 'synkro-workflow', 'synkro-worker' ]
+          description: 'The sub of the token.'
+        permissions:
+          type: 'array'
+          items:
+            type: 'string'
+          example: [ 'customers:read', 'stock:reserve', 'stock:release', 'sales:register' ]
+        issuedBy:
+          type: 'string'
+          format: 'uuid'
+          description: 'The ADMIN who requested the token (the sub of the token that called the endpoint).'
+        issuedAt:
+          type: 'string'
+          format: 'date-time'
+        expiresAt:
+          type: 'string'
+          format: 'date-time'
+          description: '30 days after issuedAt.'
+
+    ServiceTokenIssuedResponse:
+      allOf:
+        - $ref: '#/components/schemas/ServiceTokenResponse'
+        - type: 'object'
+          required: [ 'token' ]
+          properties:
+            token:
+              type: 'string'
+              description: >
+                The signed JWT. It appears only in this response and is stored as the SERVICE_TOKEN secret of the environment (ADR-006).
+
+    HealthResponse:
+      type: 'object'
+      required: [ 'status', 'service', 'timestamp' ]
+      properties:
+        status:
+          type: 'string'
+          enum: [ 'ok', 'degraded' ]
+        service:
+          type: 'string'
+          example: 'synkro-auth-api'
+        timestamp:
+          type: 'string'
+          format: 'date-time'
+        dependencies:
+          type: 'object'
+          properties:
+            database:
+              type: 'string'
+              enum: [ 'ok', 'down' ]
