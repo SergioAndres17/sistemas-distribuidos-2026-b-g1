@@ -31,3 +31,34 @@ ADMIN token signed by the attacker (401), SALESPERSON (403) and INVENTORY (200).
 (dependencies) and the negative test. The test job needs the other two, so a red step
 blocks the merge. In the team it belongs in `.github/workflows/` of synkro-products-api,
 pointing at `internal/adapter/in/httpapi`; here it is a proposal and stays in this folder.
+
+## Real console output (CP8)
+
+Run on my Windows machine on 2026-10-30, Go 1.27.3 (windows/amd64):
+
+```text
+> go vet ./...
+
+> go test -v ./...
+=== RUN   TestPriceChangeRejectsForgedAndUnauthorizedTokens
+--- PASS: TestPriceChangeRejectsForgedAndUnauthorizedTokens (0.17s)
+PASS
+ok      synkro/products-authz   0.204s
+```
+
+`go vet` printed nothing, so it found no problems. The test passes against the proposed
+fix: the forged ADMIN tokens get `401` and the SALESPERSON token gets `403`, which proves
+the first acceptance criterion of issue #271. The same test pointed at the current
+synkro-products-api would fail, because its `requireAuth` accepts any JWT-shaped token.
+
+## Workflow validation (CP8)
+
+```text
+> go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 security.yml
+
+> echo %ERRORLEVEL%
+0
+```
+
+actionlint 1.7.7 printed no errors and exited with code 0, so `security.yml` is a valid
+GitHub Actions workflow (syntax, job `needs`, expressions and action inputs).
