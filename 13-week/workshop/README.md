@@ -8,7 +8,7 @@
 - BOUNDARY: synkro-api-gateway -> synkro-products-api (permissions to change catalog, prices and stock)
 - CLAIM_ISSUE: https://github.com/code-corhuila/synkro-docs/issues/267
 - PULL_REQUEST: https://github.com/code-corhuila/synkro-docs/pull/270
-- STORIES: https://github.com/code-corhuila/synkro-docs/issues/271, https://github.com/code-corhuila/synkro-docs/issues/272, https://github.com/code-corhuila/synkro-docs/issues/273
+- STORIES: https://github.com/code-corhuila/synkro-docs/issues/271 (E, risk 9, P0), https://github.com/code-corhuila/synkro-docs/issues/272 (S, risk 6, P1), https://github.com/code-corhuila/synkro-docs/issues/273 (R, risk 4, P2) - labels security + priority, team Project backlog, linked to PR #270
 - LIBRARY_BOOK: Pressman, Roger S. Ingeniería del software: un enfoque práctico, 7.ª ed., McGraw-Hill, 2010. Call number: 005.3 P727a, copy 1 (inventory 0004985). Pages: 402-403 (sections 17.7.2 and 17.7.3)
 - LIBRARY_RECORD_TIME: 2026-10-28 19:00 (UTC-5)
 - REFLECTION_DOC: https://docs.google.com/document/d/1PfncCPQVoNdzMJ6WIADe8nQ2siG-SQ_-dEik3usE05k/edit?usp=sharing
